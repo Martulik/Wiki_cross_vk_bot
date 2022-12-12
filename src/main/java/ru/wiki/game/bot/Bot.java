@@ -14,6 +14,14 @@ import ru.wiki.game.separation.Separation;
 import ru.wiki.game.util.URLFetch;
 import ru.wiki.game.util.Utilities;
 
+
+import javax.cache.Cache;
+import javax.cache.CacheManager;
+import javax.cache.Caching;
+import javax.cache.configuration.MutableConfiguration;
+import javax.cache.expiry.CreatedExpiryPolicy;
+import javax.cache.expiry.Duration;
+import javax.cache.spi.CachingProvider;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -31,6 +39,7 @@ public class Bot {
     private final GroupActor actor;
     private final VkApiClient vk;
     private final Random random;
+    Cache<String, String> cache;
 
     public Bot() throws ConfigurationException {
         PropertiesConfiguration config = new PropertiesConfiguration();
@@ -38,6 +47,17 @@ public class Bot {
         this.actor = new GroupActor(config.getInt("groupId"), config.getString("token.access"));
         this.vk = new VkApiClient(new HttpTransportClient());
         this.random = new Random();
+
+        CachingProvider provider = Caching.getCachingProvider();
+        CacheManager cacheManager = provider.getCacheManager();
+        MutableConfiguration<String, String> configuration =
+                new MutableConfiguration<String, String>()
+                        .setTypes(String.class, String.class)
+                        .setStoreByValue(false)
+                        .setExpiryPolicyFactory(CreatedExpiryPolicy.factoryOf(Duration.FIVE_MINUTES));
+        cache = cacheManager.createCache("jCache", configuration);
+//        cache.put(1L, "one");
+//        String value = cache.get(1L);
     }
 
     public void start() throws ClientException, ApiException, InterruptedException {
@@ -85,6 +105,12 @@ public class Bot {
 
     private void startGame(String start, String end, Integer userId) throws ClientException, ApiException {
         Separation separation;
+        if (cache.containsKey(start + " -> " + end)) {
+            log.info("Getting from cache.");
+            sendMessage(cache.get(start + " -> " + end), userId);
+            setKeyboardsButton("Начать заново", userId, RESTART);
+            return;
+        }
         try {
             separation = new Separation(start, end);
         } catch (IOException e) {
@@ -94,6 +120,7 @@ public class Bot {
 
         if (!separation.getPathExists()) {
             sendMessage("Невозможно найти путь от " + start + " к " + end, userId);
+            setKeyboardsButton("Начать заново", userId, RESTART);
             log.info("Unable to find a path from " + start + " to " + end);
         } else {
             sendMessage("Понадобилось " + separation.getNumDegrees() + " переходов", userId);
@@ -116,6 +143,7 @@ public class Bot {
                 }
             }
             log.info(sb.toString());
+            cache.put(start + " -> " + end, sb.toString());
             sendMessage(sb.toString(), userId);
             setKeyboardsButton("Начать заново", userId, RESTART);
         }
@@ -131,16 +159,16 @@ public class Bot {
             if (!messages.isEmpty()) {
                 for (Message msg : messages) {
                     try {
-                        if (msg.getText().equals("Случайная статья")) {
+                        String msgCurrent = msg.getText();
+                        if (msgCurrent.equals("Случайная статья")) {
                             String article = Utilities.getRandomArticle();
                             vk.messages().send(actor).message("Случайная статья: " + article)
                                     .userId(msg.getFromId()).randomId(random.nextInt(10000)).execute();
                             return article;
                         } else {
-                            String article = msg.getText();
-                            vk.messages().send(actor).message("Ваша статья: " + article)
+                            vk.messages().send(actor).message("Ваша статья: " + msgCurrent)
                                     .userId(msg.getFromId()).randomId(random.nextInt(10000)).execute();
-                            return article;
+                            return msgCurrent;
                         }
                     } catch (ApiException | ClientException | IOException e) {
                         e.printStackTrace();
